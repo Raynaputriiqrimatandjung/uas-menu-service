@@ -1,4 +1,4 @@
-// menu-service/index.js (Versi Perbaikan & Stabil untuk Vercel)
+// menu-service/index.js (FINAL REFACTOR)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -8,129 +8,106 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3002;
 
-// Middleware
 app.use(cors());
 app.use(bodyParser.json());
 
-// --- KONEKSI MONGODB (Dengan Pengecekan) ---
+// --- KONEKSI MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
 
 if (!MONGO_URI) {
-    console.error("❌ FATAL ERROR: MONGO_URI belum diatur di file .env atau Vercel Environtment Variables.");
+    console.error("❌ FATAL ERROR: MONGO_URI belum diatur.");
 }
 
-// Opsi koneksi agar lebih stabil di Vercel
 const connectDB = async () => {
     try {
-        // Cek jika sudah connect (untuk mencegah koneksi ganda di serverless)
-        if (mongoose.connection.readyState === 1) {
-            return;
-        }
+        if (mongoose.connection.readyState === 1) return;
         await mongoose.connect(MONGO_URI);
         console.log('✅ Menu Service: Terhubung ke MongoDB');
     } catch (err) {
         console.error('❌ Gagal konek MongoDB:', err);
     }
 };
-
-// Panggil koneksi
 connectDB();
 
-// --- MODEL DATABASE (Schema Diperketat) ---
+// --- MODEL DATABASE (UPDATED SCHEMA) ---
+// Kita tambahkan 'gambar' dan 'kategori' agar frontend tidak error
 const MenuSchema = new mongoose.Schema({
-    nama: { 
-        type: String, 
-        required: [true, 'Nama menu wajib diisi'] 
-    },
-    harga: { 
-        type: Number, 
-        required: [true, 'Harga wajib diisi'] 
-    },
-    deskripsi: { 
-        type: String,
-        required: false // Deskripsi boleh kosong
-    }
+    nama: { type: String, required: true },
+    harga: { type: Number, required: true },
+    deskripsi: { type: String, default: '' },
+    // Field Baru untuk mendukung UI/UX Modern
+    gambar: { type: String, default: '' }, 
+    kategori: { type: String, default: 'Makanan' },
+    status: { type: String, default: 'tersedia' }
 });
+
 const Menu = mongoose.model('Menu', MenuSchema);
 
-// --- ROUTES CRUD ---
+// --- ROUTES ---
 
-// Health Check
-app.get('/', (req, res) => {
-    res.send("Menu Service is Running on Vercel!");
-});
+app.get('/', (req, res) => res.send("Menu Service Ready 🚀"));
 
-// READ (Ambil Semua Menu)
+// 1. READ ALL (Diurutkan dari terbaru)
 app.get('/menu', async (req, res) => {
     try {
-        await connectDB(); // Pastikan koneksi aktif
-        const menus = await Menu.find();
+        await connectDB();
+        // sort({ _id: -1 }) agar menu baru muncul paling atas
+        const menus = await Menu.find().sort({ _id: -1 });
         res.json(menus);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// CREATE (Tambah Menu)
+// 2. CREATE (Dengan Auto-Fix Data Kosong)
 app.post('/menu', async (req, res) => {
     try {
         await connectDB();
-        const { nama, harga, deskripsi } = req.body;
+        const { nama, harga, deskripsi, gambar, kategori } = req.body;
 
-        // Validasi manual sederhana
+        // Validasi Dasar
         if (!nama || !harga) {
-            return res.status(400).json({ message: "Nama dan Harga tidak boleh kosong" });
+            return res.status(400).json({ message: "Nama dan Harga wajib diisi!" });
         }
 
-        const newMenu = new Menu({ nama, harga, deskripsi });
-        await newMenu.save();
+        // Logic Default Value (Pencegah Crash Frontend)
+        // Jika gambar kosong/pendek, pakai gambar placeholder
+        const finalGambar = (gambar && gambar.length > 10) 
+            ? gambar 
+            : 'https://placehold.co/400x300?text=Menu+Lezat';
         
-        console.log("Menu baru ditambahkan:", nama);
-        res.json({ message: "Menu berhasil ditambahkan", data: newMenu });
+        const finalDeskripsi = deskripsi || 'Menu spesial rekomendasi kami.';
+        const finalKategori = kategori || 'Makanan';
+
+        const newMenu = new Menu({
+            nama,
+            harga: Number(harga),
+            deskripsi: finalDeskripsi,
+            gambar: finalGambar,
+            kategori: finalKategori,
+            status: 'tersedia'
+        });
+
+        await newMenu.save();
+        res.status(201).json({ message: "Berhasil disimpan", data: newMenu });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// UPDATE (Edit Menu)
-app.put('/menu/:id', async (req, res) => {
-    try {
-        await connectDB();
-        // { new: true } agar data yang dikembalikan adalah data SETELAH diedit
-        const updatedMenu = await Menu.findByIdAndUpdate(req.params.id, req.body, { new: true });
-
-        if (!updatedMenu) {
-            return res.status(404).json({ message: "Menu tidak ditemukan" });
-        }
-
-        res.json({ message: "Menu berhasil diupdate", data: updatedMenu });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// DELETE (Hapus Menu)
+// 3. DELETE
 app.delete('/menu/:id', async (req, res) => {
     try {
         await connectDB();
-        const deletedMenu = await Menu.findByIdAndDelete(req.params.id);
-
-        if (!deletedMenu) {
-            return res.status(404).json({ message: "Menu tidak ditemukan (Mungkin sudah dihapus)" });
-        }
-
-        res.json({ message: "Menu berhasil dihapus" });
+        await Menu.findByIdAndDelete(req.params.id);
+        res.json({ message: "Menu dihapus" });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Jalankan Server (Hanya untuk Localhost)
 if (require.main === module) {
-    app.listen(PORT, () => {
-        console.log(`🚀 Menu Service running on port ${PORT}`);
-    });
+    app.listen(PORT, () => console.log(`🚀 Menu Service running on port ${PORT}`));
 }
 
-// Export module untuk Vercel
 module.exports = app;

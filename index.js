@@ -1,4 +1,4 @@
-// menu-service/index.js (FINAL REFACTOR)
+// menu-service/index.js (FINAL REFACTOR + UPDATE FEATURE)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -29,13 +29,11 @@ const connectDB = async () => {
 };
 connectDB();
 
-// --- MODEL DATABASE (UPDATED SCHEMA) ---
-// Kita tambahkan 'gambar' dan 'kategori' agar frontend tidak error
+// --- MODEL DATABASE ---
 const MenuSchema = new mongoose.Schema({
     nama: { type: String, required: true },
     harga: { type: Number, required: true },
     deskripsi: { type: String, default: '' },
-    // Field Baru untuk mendukung UI/UX Modern
     gambar: { type: String, default: '' }, 
     kategori: { type: String, default: 'Makanan' },
     status: { type: String, default: 'tersedia' }
@@ -51,7 +49,6 @@ app.get('/', (req, res) => res.send("Menu Service Ready 🚀"));
 app.get('/menu', async (req, res) => {
     try {
         await connectDB();
-        // sort({ _id: -1 }) agar menu baru muncul paling atas
         const menus = await Menu.find().sort({ _id: -1 });
         res.json(menus);
     } catch (err) {
@@ -59,19 +56,16 @@ app.get('/menu', async (req, res) => {
     }
 });
 
-// 2. CREATE (Dengan Auto-Fix Data Kosong)
+// 2. CREATE (Tambah Menu Baru)
 app.post('/menu', async (req, res) => {
     try {
         await connectDB();
         const { nama, harga, deskripsi, gambar, kategori } = req.body;
 
-        // Validasi Dasar
         if (!nama || !harga) {
             return res.status(400).json({ message: "Nama dan Harga wajib diisi!" });
         }
 
-        // Logic Default Value (Pencegah Crash Frontend)
-        // Jika gambar kosong/pendek, pakai gambar placeholder
         const finalGambar = (gambar && gambar.length > 10) 
             ? gambar 
             : 'https://placehold.co/400x300?text=Menu+Lezat';
@@ -95,7 +89,37 @@ app.post('/menu', async (req, res) => {
     }
 });
 
-// 3. DELETE
+// 3. UPDATE (Edit Menu) - 🔥 FITUR BARU 🔥
+app.put('/menu/:id', async (req, res) => {
+    try {
+        await connectDB();
+        const { id } = req.params;
+        const { nama, harga, deskripsi, gambar, kategori, status } = req.body;
+
+        // Cek apakah ID valid formatnya
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ message: "ID Menu tidak valid" });
+        }
+
+        // Cari dan Update data
+        const updatedMenu = await Menu.findByIdAndUpdate(
+            id,
+            { nama, harga, deskripsi, gambar, kategori, status },
+            { new: true } // Opsi ini penting agar data yang dikembalikan adalah data SETELAH diedit
+        );
+
+        if (!updatedMenu) {
+            return res.status(404).json({ message: "Menu tidak ditemukan" });
+        }
+
+        console.log(`✅ Menu diupdate: ${updatedMenu.nama}`);
+        res.json({ message: "Menu berhasil diperbarui", data: updatedMenu });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 4. DELETE (Hapus Menu)
 app.delete('/menu/:id', async (req, res) => {
     try {
         await connectDB();

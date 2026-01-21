@@ -1,85 +1,88 @@
-// menu-service/index.js (FINAL REFACTOR + UPDATE FEATURE)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const bodyParser = require('body-parser');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// --- 1. KONFIGURASI CLOUDINARY ---
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// --- 2. KONFIGURASI MULTER (Upload ke RAM sementara) ---
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
 // --- KONEKSI MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
-
-if (!MONGO_URI) {
-    console.error("❌ FATAL ERROR: MONGO_URI belum diatur.");
-}
-
 const connectDB = async () => {
     try {
         if (mongoose.connection.readyState === 1) return;
         await mongoose.connect(MONGO_URI);
         console.log('✅ Menu Service: Terhubung ke MongoDB');
-    } catch (err) {
-        console.error('❌ Gagal konek MongoDB:', err);
-    }
+    } catch (err) { console.error('❌ Gagal konek MongoDB:', err); }
 };
 connectDB();
 
-// --- MODEL DATABASE ---
-const MenuSchema = new mongoose.Schema({
+// --- MODEL ---
+const Menu = mongoose.model('Menu', new mongoose.Schema({
     nama: { type: String, required: true },
     harga: { type: Number, required: true },
     deskripsi: { type: String, default: '' },
     gambar: { type: String, default: '' }, 
     kategori: { type: String, default: 'Makanan' },
     status: { type: String, default: 'tersedia' }
-});
+}));
 
-const Menu = mongoose.model('Menu', MenuSchema);
+// --- HELPER: Upload ke Cloudinary ---
+async function handleImageUpload(file) {
+    return new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+            { folder: "kantinku_menu" }, 
+            (error, result) => {
+                if (error) reject(error);
+                else resolve(result.secure_url);
+            }
+        );
+        uploadStream.end(file.buffer);
+    });
+}
 
 // --- ROUTES ---
 
-app.get('/', (req, res) => res.send("Menu Service Ready 🚀"));
+app.get('/', (req, res) => res.send("Menu Service Upload Ready 🚀"));
 
-// 1. READ ALL (Diurutkan dari terbaru)
 app.get('/menu', async (req, res) => {
-    try {
-        await connectDB();
-        const menus = await Menu.find().sort({ _id: -1 });
-        res.json(menus);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    await connectDB();
+    const menus = await Menu.find().sort({ _id: -1 });
+    res.json(menus);
 });
 
-// 2. CREATE (Tambah Menu Baru)
-app.post('/menu', async (req, res) => {
+// CREATE (Support File Upload)
+app.post('/menu', upload.single('gambarFile'), async (req, res) => {
     try {
         await connectDB();
-        const { nama, harga, deskripsi, gambar, kategori } = req.body;
+        let { nama, harga, deskripsi, kategori, gambarUrlManual } = req.body;
+        
+        let finalGambar = gambarUrlManual || 'https://placehold.co/400x300?text=Menu+Lezat';
 
-        if (!nama || !harga) {
-            return res.status(400).json({ message: "Nama dan Harga wajib diisi!" });
+        if (req.file) {
+            console.log("📤 Mengupload gambar...");
+            finalGambar = await handleImageUpload(req.file);
         }
 
-        const finalGambar = (gambar && gambar.length > 10) 
-            ? gambar 
-            : 'https://placehold.co/400x300?text=Menu+Lezat';
-        
-        const finalDeskripsi = deskripsi || 'Menu spesial rekomendasi kami.';
-        const finalKategori = kategori || 'Makanan';
-
         const newMenu = new Menu({
-            nama,
-            harga: Number(harga),
-            deskripsi: finalDeskripsi,
-            gambar: finalGambar,
-            kategori: finalKategori,
-            status: 'tersedia'
+            nama, harga: Number(harga), deskripsi, gambar: finalGambar, kategori, status: 'tersedia'
         });
 
         await newMenu.save();
@@ -89,49 +92,37 @@ app.post('/menu', async (req, res) => {
     }
 });
 
-// 3. UPDATE (Edit Menu) - 🔥 FITUR BARU 🔥
-app.put('/menu/:id', async (req, res) => {
+// UPDATE (Support File Upload)
+app.put('/menu/:id', upload.single('gambarFile'), async (req, res) => {
     try {
         await connectDB();
         const { id } = req.params;
-        const { nama, harga, deskripsi, gambar, kategori, status } = req.body;
+        let { nama, harga, deskripsi, kategori, status, gambarUrlManual } = req.body;
+        let updateData = { nama, harga, deskripsi, kategori, status };
 
-        // Cek apakah ID valid formatnya
-        if (!mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ message: "ID Menu tidak valid" });
+        if (req.file) {
+            const newImageUrl = await handleImageUpload(req.file);
+            updateData.gambar = newImageUrl;
+        } else if (gambarUrlManual && gambarUrlManual.trim() !== "") {
+            updateData.gambar = gambarUrlManual;
         }
 
-        // Cari dan Update data
-        const updatedMenu = await Menu.findByIdAndUpdate(
-            id,
-            { nama, harga, deskripsi, gambar, kategori, status },
-            { new: true } // Opsi ini penting agar data yang dikembalikan adalah data SETELAH diedit
-        );
-
-        if (!updatedMenu) {
-            return res.status(404).json({ message: "Menu tidak ditemukan" });
-        }
-
-        console.log(`✅ Menu diupdate: ${updatedMenu.nama}`);
+        const updatedMenu = await Menu.findByIdAndUpdate(id, updateData, { new: true });
+        if (!updatedMenu) return res.status(404).json({ message: "Menu tidak ditemukan" });
+        
         res.json({ message: "Menu berhasil diperbarui", data: updatedMenu });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// 4. DELETE (Hapus Menu)
 app.delete('/menu/:id', async (req, res) => {
-    try {
-        await connectDB();
-        await Menu.findByIdAndDelete(req.params.id);
-        res.json({ message: "Menu dihapus" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    await connectDB();
+    await Menu.findByIdAndDelete(req.params.id);
+    res.json({ message: "Menu dihapus" });
 });
 
 if (require.main === module) {
-    app.listen(PORT, () => console.log(`🚀 Menu Service running on port ${PORT}`));
+    app.listen(PORT, () => console.log(`🚀 Service running on port ${PORT}`));
 }
-
 module.exports = app;
